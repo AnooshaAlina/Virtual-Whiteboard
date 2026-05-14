@@ -1,218 +1,254 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Virtual Whiteboard</title>
+<meta charset="utf-8"/>
+<title>Advanced Virtual Whiteboard</title>
 
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+<style>
+body { margin:0; overflow:hidden; background:black; }
 
-    body {
-      overflow: hidden;
-      background: black;
-      font-family: Arial, sans-serif;
-    }
+#video {
+  position:absolute;
+  top:0; left:0;
+  width:1280px; height:720px;
+  transform: scaleX(-1);
+}
 
-    video {
-      display: none;
-    }
+#canvas {
+  position:absolute;
+  top:0; left:0;
+  z-index:10;
+}
 
-    canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-    }
+.toolbar {
+  position:absolute;
+  top:0; left:0;
+  height:70px;
+  width:1280px;
+  background:#111;
+  z-index:20;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:5px;
+}
 
-    #toolbar {
-      position: fixed;
-      top: 20px;
-      left: 20px;
-      z-index: 999;
+.btn { padding:6px 10px; background:#333; color:white; border:0; cursor:pointer; }
 
-      display: flex;
-      gap: 10px;
-    }
-
-    button {
-      padding: 12px 20px;
-      border: none;
-      border-radius: 10px;
-      background: rgba(0,0,0,0.7);
-      color: white;
-      cursor: pointer;
-      font-size: 16px;
-    }
-
-    button:hover {
-      background: rgba(255,255,255,0.2);
-    }
-  </style>
+.color {
+  width:18px; height:18px;
+  border-radius:50%;
+  border:2px solid white;
+  cursor:pointer;
+}
+</style>
 </head>
 
 <body>
 
-  <video id="video" autoplay playsinline></video>
+<video id="video" autoplay></video>
+<canvas id="canvas"></canvas>
 
-  <canvas id="cameraCanvas"></canvas>
-  <canvas id="drawCanvas"></canvas>
+<div class="toolbar">
+  <button class="btn" onclick="undo()">Undo</button>
+  <button class="btn" onclick="clearAll()">Clear</button>
 
-  <div id="toolbar">
-    <button id="clearBtn">CLEAR</button>
-  </div>
+  <div class="color" style="background:white" onclick="setColor('white')"></div>
+  <div class="color" style="background:black" onclick="setColor('black')"></div>
+  <div class="color" style="background:red" onclick="setColor('red')"></div>
+  <div class="color" style="background:blue" onclick="setColor('blue')"></div>
+  <div class="color" style="background:green" onclick="setColor('green')"></div>
 
-  <!-- MediaPipe -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <button class="btn" onclick="setSize(3)">3</button>
+  <button class="btn" onclick="setSize(6)">6</button>
+  <button class="btn" onclick="setSize(10)">10</button>
+  <button class="btn" onclick="setSize(18)">18</button>
+</div>
 
-  <script>
-    const videoElement = document.getElementById("video");
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 
-    const cameraCanvas = document.getElementById("cameraCanvas");
-    const cameraCtx = cameraCanvas.getContext("2d");
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
-    const drawCanvas = document.getElementById("drawCanvas");
-    const drawCtx = drawCanvas.getContext("2d");
+canvas.width = 1280;
+canvas.height = 720;
 
-    const clearBtn = document.getElementById("clearBtn");
+let color = "red";
+let size = 6;
+let mode = "IDLE";
 
-    function resizeCanvas() {
-      cameraCanvas.width = window.innerWidth;
-      cameraCanvas.height = window.innerHeight;
+let strokes = [];
+let liveStroke = [];
+let shapeStart = null;
+let prevCursor = null;
 
-      drawCanvas.width = window.innerWidth;
-      drawCanvas.height = window.innerHeight;
+function setColor(c){ color = c; }
+function setSize(s){ size = s; }
+
+function undo(){
+  strokes.pop();
+  redraw();
+}
+
+function clearAll(){
+  strokes = [];
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+}
+
+function dist(a,b){
+  return Math.hypot(a.x-b.x, a.y-b.y);
+}
+
+function drawLine(a,b,c,s){
+  ctx.strokeStyle = c;
+  ctx.lineWidth = s;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(a.x,a.y);
+  ctx.lineTo(b.x,b.y);
+  ctx.stroke();
+}
+
+function redraw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for(let s of strokes){
+    if(s.type === "draw"){
+      for(let i=1;i<s.pts.length;i++){
+        drawLine(s.pts[i-1], s.pts[i], s.color, s.size);
+      }
     }
-
-    resizeCanvas();
-
-    window.addEventListener("resize", resizeCanvas);
-
-    // Clear button
-    clearBtn.addEventListener("click", () => {
-      drawCtx.clearRect(
-        0,
-        0,
-        drawCanvas.width,
-        drawCanvas.height
-      );
-    });
-
-    let lastX = null;
-    let lastY = null;
-
-    // MediaPipe Hands
-    const hands = new Hands({
-      locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-      }
-    });
-
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7
-    });
-
-    hands.onResults(onResults);
-
-    // Camera
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await hands.send({ image: videoElement });
-      },
-      width: 1280,
-      height: 720
-    });
-
-    camera.start();
-
-    function onResults(results) {
-
-      // Draw camera feed
-      cameraCtx.save();
-
-      cameraCtx.clearRect(
-        0,
-        0,
-        cameraCanvas.width,
-        cameraCanvas.height
-      );
-
-      cameraCtx.drawImage(
-        results.image,
-        0,
-        0,
-        cameraCanvas.width,
-        cameraCanvas.height
-      );
-
-      cameraCtx.restore();
-
-      // No hand detected
-      if (
-        !results.multiHandLandmarks ||
-        results.multiHandLandmarks.length === 0
-      ) {
-        lastX = null;
-        lastY = null;
-        return;
-      }
-
-      const landmarks = results.multiHandLandmarks[0];
-
-      const indexTip = landmarks[8];
-      const thumbTip = landmarks[4];
-
-      const x = indexTip.x * drawCanvas.width;
-      const y = indexTip.y * drawCanvas.height;
-
-      // Pinch detection
-      const pinchDistance = Math.hypot(
-        indexTip.x - thumbTip.x,
-        indexTip.y - thumbTip.y
-      );
-
-      const isPinching = pinchDistance < 0.05;
-
-      // Draw only when NOT pinching
-      if (!isPinching) {
-
-        if (lastX !== null && lastY !== null) {
-
-          drawCtx.strokeStyle = "red";
-          drawCtx.lineWidth = 5;
-          drawCtx.lineCap = "round";
-
-          drawCtx.beginPath();
-          drawCtx.moveTo(lastX, lastY);
-          drawCtx.lineTo(x, y);
-          drawCtx.stroke();
-        }
-
-        lastX = x;
-        lastY = y;
-
-      } else {
-
-        lastX = null;
-        lastY = null;
-      }
-
-      // Cursor
-      drawCtx.fillStyle = "cyan";
-
-      drawCtx.beginPath();
-      drawCtx.arc(x, y, 10, 0, Math.PI * 2);
-      drawCtx.fill();
+    if(s.type === "rect"){
+      const a = s.a, b = s.b;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = s.size;
+      ctx.strokeRect(a.x,a.y,b.x-a.x,b.y-a.y);
     }
-  </script>
+  }
+}
+
+/* ── MediaPipe Hands ───────────────────────── */
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+
+hands.setOptions({
+  maxNumHands:1,
+  modelComplexity:1,
+  minDetectionConfidence:0.7,
+  minTrackingConfidence:0.7
+});
+
+hands.onResults(onResults);
+
+/* ── Gesture logic (RESTORED) ─────────────── */
+
+function isFingerUp(lm, tip, pip){
+  return lm[tip].y < lm[pip].y;
+}
+
+function onResults(results){
+  if(!results.multiHandLandmarks) return;
+
+  const lm = results.multiHandLandmarks[0];
+
+  const index = lm[8];
+  const thumb = lm[4];
+  const wrist = lm[0];
+
+  const iu = isFingerUp(lm,8,6);
+  const mu = isFingerUp(lm,12,10);
+  const ru = isFingerUp(lm,16,14);
+  const pu = isFingerUp(lm,20,18);
+
+  const openPalm =
+    iu && mu && ru && pu &&
+    dist(lm[8],wrist) > dist(lm[6],wrist);
+
+  const pinch = dist(index, thumb) < 0.05;
+
+  let cx = index.x * canvas.width;
+  let cy = index.y * canvas.height;
+
+  // smoothing (like Python EMA)
+  if(prevCursor){
+    cx = prevCursor.x*0.6 + cx*0.4;
+    cy = prevCursor.y*0.6 + cy*0.4;
+  }
+  const cursor = {x:cx,y:cy};
+  prevCursor = cursor;
+
+  /* ── MODE SYSTEM ── */
+  if(openPalm) mode = "ERASE";
+  else if(pinch) mode = "SELECT";
+  else if(iu && mu) mode = "SHAPE";
+  else if(iu) mode = "DRAW";
+  else mode = "IDLE";
+
+  /* ── DRAW ── */
+  if(mode === "DRAW"){
+    if(liveStroke.length === 0){
+      liveStroke = [];
+      strokes.push({
+        type:"draw",
+        pts: liveStroke,
+        color,
+        size
+      });
+    }
+    liveStroke.push(cursor);
+
+    if(liveStroke.length > 1){
+      drawLine(
+        liveStroke[liveStroke.length-2],
+        liveStroke[liveStroke.length-1],
+        color,
+        size
+      );
+    }
+  }
+
+  /* ── ERASE ── */
+  if(mode === "ERASE"){
+    ctx.clearRect(cursor.x-30,cursor.y-30,60,60);
+  }
+
+  /* ── SHAPE ── */
+  if(mode === "SHAPE"){
+    if(!shapeStart) shapeStart = cursor;
+  } else {
+    if(shapeStart){
+      strokes.push({
+        type:"rect",
+        a: shapeStart,
+        b: cursor,
+        color,
+        size
+      });
+      shapeStart = null;
+    }
+  }
+
+  if(mode !== "DRAW"){
+    liveStroke = [];
+  }
+}
+
+/* ── Camera ─────────────────────────────── */
+
+const camera = new Camera(video,{
+  onFrame: async () => {
+    await hands.send({image: video});
+  },
+  width:1280,
+  height:720
+});
+
+camera.start();
+</script>
 
 </body>
 </html>
