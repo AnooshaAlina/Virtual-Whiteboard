@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Virtual Whiteboard — Hand Tracking</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+<style>
+body { margin:0; background:#111; font-family:monospace; overflow:hidden; }
+#wrap { display:flex; }
+#video { position:absolute; top:0; left:0; width:420px; height:320px; transform:scaleX(-1); opacity:0.2; }
+canvas { position:absolute; top:0; left:0; }
+#ui { position:absolute; top:0; left:0; right:0; height:70px; background:#222; color:#0ff; display:flex; align-items:center; padding:10px; gap:15px; }
+button { background:#0ff; border:none; padding:6px 10px; cursor:pointer; font-weight:bold; }
+</style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+<canvas id="draw"></canvas>
+
+<div id="ui">
+<div id="mode">MODE: IDLE</div>
+<button onclick="clearAll()">CLEAR</button>
+<button onclick="undo()">UNDO</button>
+</div>
+
+<script>
+const W = 1280, H = 720;
+const TOOLBAR_H = 70;
+
+let mode = "IDLE";
+let colorIndex = 1;
+let brushSize = 6;
+
+const colors = [
+"#fff","#000","#f33","#f80","#ff0",
+"#0f0","#0ff","#00f","#a0f","#f0f"
+];
+
+let strokes = [];
+let live = [];
+let paint = document.getElementById("draw");
+let pctx = paint.getContext("2d");
+
+paint.width = W;
+paint.height = H;
+
+function redraw(){
+  pctx.fillStyle="#fff";
+  pctx.fillRect(0,0,W,H);
+  for(let s of strokes){
+    if(s.type=="line"){
+      pctx.strokeStyle=s.color;
+      pctx.lineWidth=s.size;
+      pctx.beginPath();
+      for(let i=0;i<s.pts.length;i++){
+        let p=s.pts[i];
+        if(i==0)pctx.moveTo(p.x,p.y);
+        else pctx.lineTo(p.x,p.y);
+      }
+      pctx.stroke();
+    }
+    if(s.type=="erase"){
+      for(let p of s.pts){
+        pctx.clearRect(p.x-40,p.y-40,80,80);
+      }
+    }
+  }
+}
+
+function commit(){
+  if(live.length>1){
+    strokes.push({type:"line",color:colors[colorIndex],size:brushSize,pts:[...live]});
+  }
+  live=[];
+}
+
+function clearAll(){ strokes=[]; redraw(); }
+function undo(){ strokes.pop(); redraw(); }
+
+// ---------- HAND TRACKING ----------
+const video = document.getElementById("video");
+const modeLabel = document.getElementById("mode");
+
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y); }
+
+function getMode(lm){
+  let iu = lm[8].y < lm[6].y;
+  let mu = lm[12].y < lm[10].y;
+  let ru = lm[16].y < lm[14].y;
+  let pu = lm[20].y < lm[18].y;
+
+  let open = iu && mu && ru && pu;
+  let pinch = dist(lm[8],lm[4])<0.05;
+
+  if(open) return "ERASE";
+  if(pinch) return "SELECT";
+  if(iu && mu && !ru) return "SHAPE";
+  if(iu) return "DRAW";
+  return "IDLE";
+}
+
+function onResults(res){
+  let ctx = pctx;
+  if(res.multiHandLandmarks && res.multiHandLandmarks.length>0){
+    let lm = res.multiHandLandmarks[0];
+
+    let tip = lm[8];
+    let x = (1-tip.x)*W;
+    let y = tip.y*H;
+
+    mode = getMode(lm);
+    modeLabel.innerText="MODE: "+mode;
+
+    if(y<TOOLBAR_H) return;
+
+    let p = {x,y:y-TOOLBAR_H};
+
+    if(mode=="DRAW"){
+      if(live.length==0) brushSize=6;
+      live.push(p);
+      if(live.length>1){
+        ctx.strokeStyle=colors[colorIndex];
+        ctx.lineWidth=brushSize;
+        ctx.beginPath();
+        ctx.moveTo(live[live.length-2].x,live[live.length-2].y);
+        ctx.lineTo(p.x,p.y);
+        ctx.stroke();
+      }
+    }
+
+    if(mode=="ERASE"){
+      ctx.clearRect(p.x-40,p.y-40,80,80);
+      strokes.push({type:"erase",pts:[p]});
+    }
+
+  } else {
+    commit();
+  }
+}
+
+const hands = new Hands({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+hands.setOptions({maxNumHands:1,minDetectionConfidence:0.7,minTrackingConfidence:0.7});
+hands.onResults(onResults);
+
+const cam = new Camera(video,{onFrame:async()=>{await hands.send({image:video});},width:640,height:480});
+cam.start();
+
+redraw();
+</script>
+
+</body>
+</html>
